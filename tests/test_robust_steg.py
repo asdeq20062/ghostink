@@ -1,11 +1,15 @@
+import math
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from robust_steg import StegError, embed_text, extract_text, image_capacity
+import robust_steg as steg
 
 
 class RobustStegTests(unittest.TestCase):
@@ -70,6 +74,61 @@ class RobustStegTests(unittest.TestCase):
         low = image_capacity(512, 512, 3).max_payload_bytes
         high = image_capacity(512, 512, 7).max_payload_bytes
         self.assertGreater(low, high)
+
+    def test_bch_capacity_exceeds_legacy_convolutional_code(self):
+        result = image_capacity(512, 512, 3)
+        header_carriers = steg._coded_carrier_count(steg.HEADER.size, steg.HEADER_REDUNDANCY)
+        remaining = result.carriers - header_carriers
+        legacy_bits = max(0, remaining // 6 - steg.MEMORY)
+        legacy_capacity = max(0, legacy_bits // 8 - 4)
+        self.assertGreater(result.max_payload_bytes, legacy_capacity)
+        self.assertGreaterEqual(result.max_payload_bytes, math.floor(legacy_capacity * 1.4))
+
+    def test_bch_corrects_three_errors_in_each_codeword(self):
+        data = [(index * 7 + 3) % 2 for index in range(steg.BCH_K)]
+        encoded = steg._bch_encode_block(data)
+        for position in (0, 17, 62):
+            encoded[position] ^= 1
+        self.assertEqual(steg._bch_decode_block(encoded), data)
+
+    def test_bch_capacity_boundary_round_trip(self):
+        output = self.root / "full.png"
+        capacity = image_capacity(768, 768, 3).max_payload_bytes
+        message = "x" * capacity
+        embed_text(self.source, output, message)
+        self.assertEqual(extract_text(output), message)
+
+    def test_reads_legacy_v1_watermark(self):
+        output = self.root / "legacy.png"
+        message = "舊版卷積碼仍可讀取"
+        payload = message.encode("utf-8")
+        ycbcr, alpha = steg._open_image(self.source)
+        height, width = ycbcr.shape[:2]
+        order = steg._carrier_order(width, height, "legacy-key")
+        header = steg.HEADER.pack(
+            steg.MAGIC, steg.LEGACY_VERSION, steg.DEFAULT_REDUNDANCY, len(payload)
+        )
+        position = steg._embed_convolutional_stream(
+            ycbcr[:, :, 0],
+            order,
+            0,
+            header,
+            steg.HEADER_REDUNDANCY,
+            steg.DEFAULT_STRENGTH,
+            width,
+        )
+        checksum = struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
+        steg._embed_convolutional_stream(
+            ycbcr[:, :, 0],
+            order,
+            position,
+            payload + checksum,
+            steg.DEFAULT_REDUNDANCY,
+            steg.DEFAULT_STRENGTH,
+            width,
+        )
+        steg._save_image(ycbcr, alpha, output, 95)
+        self.assertEqual(extract_text(output, key="legacy-key"), message)
 
 
 if __name__ == "__main__":
