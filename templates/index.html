@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>影像文字浮水印</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand" aria-label="影像文字浮水印">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span>
+          <strong>影像文字浮水印</strong>
+          <small>本機工具</small>
+        </span>
+      </div>
+      <div class="local-state"><span aria-hidden="true"></span>本機處理</div>
+    </header>
+
+    <main class="page">
+      <section class="heading">
+        <p class="eyebrow">工作區</p>
+        <h1>圖片文字處理</h1>
+        <p>把文字嵌入圖片，或從已處理的圖片讀取文字。</p>
+      </section>
+
+      <div class="mode-tabs" role="tablist" aria-label="處理模式">
+        <button class="mode-tab active" type="button" role="tab" aria-selected="true" data-mode="embed">
+          <span class="tab-index">01</span>
+          <span><strong>嵌入文字</strong><small>建立帶有隱藏文字的圖片</small></span>
+        </button>
+        <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="extract">
+          <span class="tab-index">02</span>
+          <span><strong>讀取文字</strong><small>從圖片取回已嵌入的內容</small></span>
+        </button>
+      </div>
+
+      <section class="workspace">
+        <form class="control-panel" id="process-form" novalidate>
+          <div class="section-label"><span>1</span>選擇圖片</div>
+          <label class="dropzone" id="dropzone" for="image-input">
+            <input id="image-input" name="image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+            <span class="upload-glyph" aria-hidden="true"><i></i></span>
+            <strong>拖放或貼上圖片到這裡</strong>
+            <span>按一下選擇檔案，或按 Ctrl / ⌘ + V 貼上</span>
+            <small>PNG、JPEG、WebP、BMP · 最大 30 MB</small>
+          </label>
+
+          <div class="selected-file" id="selected-file" hidden>
+            <div class="file-thumb"><img id="file-thumb" alt="已選圖片預覽" /></div>
+            <div class="file-copy">
+              <strong id="file-name"></strong>
+              <span id="file-meta"></span>
+            </div>
+            <button id="remove-file" class="icon-button" type="button" aria-label="移除圖片">×</button>
+          </div>
+
+          <div class="form-block embed-only">
+            <div class="section-label"><span>2</span>輸入內容</div>
+            <label class="field-label" for="message">隱藏文字</label>
+            <div class="textarea-wrap">
+              <textarea id="message" name="text" rows="6" placeholder="輸入要嵌入圖片的文字"></textarea>
+              <div class="count-line">
+                <span id="message-count">0 bytes</span>
+                <span id="capacity-label">選擇圖片後顯示容量</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-block">
+            <div class="section-label"><span class="step-number">3</span>金鑰設定</div>
+            <div class="key-card">
+              <div>
+                <strong>使用金鑰</strong>
+                <span>關閉後會以空白金鑰處理</span>
+              </div>
+              <label class="switch">
+                <input id="use-key" type="checkbox" checked />
+                <span aria-hidden="true"></span>
+                <b class="sr-only">使用金鑰</b>
+              </label>
+            </div>
+            <div class="key-input-row" id="key-input-row">
+              <label class="field-label" for="key">金鑰</label>
+              <div class="password-wrap">
+                <input id="key" name="key" type="password" autocomplete="off" placeholder="輸入金鑰" />
+                <button id="toggle-key" type="button" aria-label="顯示金鑰">顯示</button>
+              </div>
+              <small>嵌入與讀取時必須使用相同金鑰。</small>
+            </div>
+          </div>
+
+          <details class="advanced">
+            <summary><span>進階設定</span><small>強度、備援與輸出格式</small></summary>
+            <div class="advanced-body">
+              <div class="range-field">
+                <div><label for="strength">嵌入強度</label><output id="strength-value">56</output></div>
+                <input id="strength" name="strength" type="range" min="8" max="120" value="56" step="1" />
+                <div class="range-scale"><span>影像較自然</span><span>較耐壓縮</span></div>
+              </div>
+
+              <div class="embed-only options-grid">
+                <label>
+                  <span>備援程度</span>
+                  <select id="redundancy" name="redundancy">
+                    <option value="1">1 · 較大容量</option>
+                    <option value="3" selected>3 · 標準</option>
+                    <option value="5">5 · 較耐壓縮</option>
+                    <option value="7">7 · 高備援</option>
+                  </select>
+                </label>
+                <label>
+                  <span>輸出格式</span>
+                  <select id="output-format" name="output_format">
+                    <option value="png" selected>PNG</option>
+                    <option value="jpeg">JPEG</option>
+                    <option value="webp">WebP</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="embed-only range-field quality-field" id="quality-field" hidden>
+                <div><label for="quality">輸出品質</label><output id="quality-value">95</output></div>
+                <input id="quality" name="quality" type="range" min="50" max="100" value="95" step="1" />
+              </div>
+            </div>
+          </details>
+
+          <div class="form-error" id="form-error" role="alert" hidden></div>
+          <button class="primary-button" id="submit-button" type="submit">
+            <span class="button-label">產生浮水印圖片</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <aside class="preview-panel">
+          <div class="preview-heading">
+            <div><span>預覽</span><strong id="preview-title">尚未選擇圖片</strong></div>
+            <span class="format-badge" id="format-badge" hidden></span>
+          </div>
+
+          <div class="image-stage empty" id="image-stage">
+            <img id="large-preview" alt="圖片預覽" hidden />
+            <div class="empty-preview" id="empty-preview">
+              <span class="frame-icon" aria-hidden="true"><i></i></span>
+              <strong>圖片預覽</strong>
+              <span>選擇圖片後會顯示在這裡</span>
+            </div>
+            <div class="processing" id="processing" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <strong id="processing-label">正在處理圖片</strong>
+            </div>
+          </div>
+
+          <div class="image-stats" id="image-stats" hidden>
+            <div><span>尺寸</span><strong id="stat-dimensions">—</strong></div>
+            <div><span>檔案大小</span><strong id="stat-size">—</strong></div>
+            <div><span>文字容量</span><strong id="stat-capacity">—</strong></div>
+          </div>
+
+          <section class="result-card" id="result-card" hidden>
+            <div class="result-header">
+              <div><span class="result-dot"></span><strong>讀取結果</strong></div>
+              <button id="copy-result" type="button">複製文字</button>
+            </div>
+            <pre id="result-text"></pre>
+            <small id="result-meta"></small>
+          </section>
+
+          <p class="privacy-note"><span aria-hidden="true">⌁</span>圖片由這部裝置上的本機服務處理。</p>
+        </aside>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  </body>
+</html>
