@@ -10,6 +10,8 @@ const state = {
   hiddenObjectUrl: null,
   extractedObjectUrl: null,
   extractedFilename: null,
+  outputObjectUrl: null,
+  outputFilename: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -69,6 +71,13 @@ function setBusy(busy, label = "正在處理圖片") {
   $("#processing").hidden = !busy;
 }
 
+function clearOutputPreview() {
+  if (state.outputObjectUrl) URL.revokeObjectURL(state.outputObjectUrl);
+  state.outputObjectUrl = null;
+  state.outputFilename = null;
+  $("#preview-download-hint").hidden = true;
+}
+
 function updateMessageCount() {
   const bytes = utf8Length(message.value);
   $("#message-count").textContent = `${bytes.toLocaleString()} bytes`;
@@ -117,6 +126,7 @@ function setMode(mode) {
 }
 
 function clearFile() {
+  clearOutputPreview();
   state.file = null;
   state.capacity = null;
   state.dimensions = null;
@@ -141,11 +151,11 @@ async function selectHiddenImage(file) {
   clearError();
   if (!file || !supportedImageTypes.has(file.type.toLowerCase())) {
     showError("隱藏圖片只支援 PNG、JPEG、WebP 或 BMP。");
-    return;
+    return false;
   }
   if (file.size > 30 * 1024 * 1024) {
     showError("隱藏圖片不可大於 30 MB。");
-    return;
+    return false;
   }
   if (state.hiddenObjectUrl) URL.revokeObjectURL(state.hiddenObjectUrl);
   state.hiddenFile = file;
@@ -154,6 +164,7 @@ async function selectHiddenImage(file) {
   $("#hidden-image-thumb").hidden = false;
   $("#hidden-image-copy strong").textContent = file.name;
   $("#hidden-image-copy small").textContent = `${formatBytes(file.size)} · 按一下可更換`;
+  return true;
 }
 
 async function selectImage(file) {
@@ -167,6 +178,7 @@ async function selectImage(file) {
     return false;
   }
 
+  clearOutputPreview();
   if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
   state.file = file;
   state.objectUrl = URL.createObjectURL(file);
@@ -292,15 +304,17 @@ form.addEventListener("submit", async (event) => {
       const response = await fetch("/api/embed", { method: "POST", body: data });
       if (!response.ok) throw new Error(await parseError(response));
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = getDownloadName(response, "watermarked.png");
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-      toast("圖片已完成並開始下載");
+      clearOutputPreview();
+      state.outputObjectUrl = URL.createObjectURL(blob);
+      state.outputFilename = getDownloadName(response, "watermarked.png");
+      const preview = $("#large-preview");
+      preview.src = state.outputObjectUrl;
+      preview.alt = "輸出的隱寫圖片預覽";
+      $("#preview-title").textContent = state.outputFilename;
+      $("#format-badge").textContent = (state.outputFilename.split(".").pop() || "IMG").toUpperCase();
+      $("#stat-size").textContent = formatBytes(blob.size);
+      $("#preview-download-hint").hidden = false;
+      toast("圖片已完成，可在預覽圖上按右鍵下載");
     } else {
       const response = await fetch("/api/extract", { method: "POST", body: data });
       if (!response.ok) throw new Error(await parseError(response));
@@ -366,7 +380,12 @@ document.addEventListener("paste", async (event) => {
   const pastedFile = clipboardFile && extension
     ? new File([clipboardFile], `pasted-image.${extension}`, { type: clipboardFile.type })
     : clipboardFile;
-  if (await selectImage(pastedFile)) toast("已從剪貼簿貼上圖片");
+  const pasteAsHiddenImage = state.mode === "embed" && state.payloadType === "image";
+  if (pasteAsHiddenImage) {
+    if (await selectHiddenImage(pastedFile)) toast("已貼上要隱藏的圖片");
+  } else if (await selectImage(pastedFile)) {
+    toast("已從剪貼簿貼上載體圖片");
+  }
 });
 
 useKey.addEventListener("change", () => {
@@ -399,6 +418,13 @@ $("#result-action").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("#result-text").textContent);
     toast("文字已複製");
   }
+});
+
+window.addEventListener("beforeunload", () => {
+  if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
+  if (state.hiddenObjectUrl) URL.revokeObjectURL(state.hiddenObjectUrl);
+  if (state.extractedObjectUrl) URL.revokeObjectURL(state.extractedObjectUrl);
+  if (state.outputObjectUrl) URL.revokeObjectURL(state.outputObjectUrl);
 });
 
 updateMessageCount();

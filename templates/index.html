@@ -75,10 +75,10 @@
             </div>
             <div data-payload-panel="image" hidden>
               <label class="field-label" for="hidden-image-input">要隱藏的圖片</label>
-              <label class="hidden-image-picker" for="hidden-image-input">
+              <label class="hidden-image-picker" id="hidden-image-picker" for="hidden-image-input">
                 <input id="hidden-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
                 <img id="hidden-image-thumb" alt="隱藏圖片預覽" hidden />
-                <span id="hidden-image-copy"><strong>選擇圖片</strong><small>會自動轉成 WebP 並縮小至可用容量</small></span>
+                <span id="hidden-image-copy"><strong>選擇圖片</strong><small>按一下選擇，或貼上圖片；會自動轉成 WebP 並縮小</small></span>
               </label>
               <p class="payload-note" id="image-capacity-label">選擇載體圖片後顯示可用容量。</p>
             </div>
@@ -167,6 +167,7 @@
               <span class="spinner" aria-hidden="true"></span>
               <strong id="processing-label">正在處理圖片</strong>
             </div>
+            <span class="preview-download-hint" id="preview-download-hint" hidden>按右鍵使用瀏覽器選單下載</span>
           </div>
 
           <div class="image-stats" id="image-stats" hidden>
