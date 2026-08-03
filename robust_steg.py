@@ -6,15 +6,16 @@ The payload is stored in quantized differences between pairs of mid-frequency
 carriers make the watermark survive ordinary lossy transcoding. Version 1
 convolutional-code watermarks remain readable.
 
-This is robust watermarking, not high-capacity lossless steganography.  It is
-not designed to survive resizing, cropping, rotation, screenshots, or severe
-filtering.
+This is robust watermarking, not high-capacity lossless steganography. Text
+and compact image payloads are supported. It is not designed to survive
+resizing, cropping, rotation, screenshots, or severe filtering.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import math
 import struct
 import sys
@@ -30,10 +31,14 @@ from PIL import Image, ImageOps
 MAGIC = b"RSTG"
 LEGACY_VERSION = 1
 VERSION = 2
+IMAGE_VERSION = 3
 DEFAULT_STRENGTH = 56.0
 DEFAULT_REDUNDANCY = 3
 HEADER_REDUNDANCY = 3
 HEADER = struct.Struct(">4sBBH")  # magic, version, payload redundancy, byte count
+IMAGE_MAGIC = b"RIMG"
+IMAGE_ENVELOPE = struct.Struct(">4sBHH")  # magic, format, width, height
+IMAGE_FORMAT_WEBP = 1
 POLYNOMIALS = (0o133, 0o171)  # rate 1/2, constraint length 7
 MEMORY = 6
 
@@ -62,6 +67,30 @@ class Capacity:
     height: int
     carriers: int
     max_payload_bytes: int
+
+
+@dataclass(frozen=True)
+class WatermarkPayload:
+    kind: str
+    data: bytes
+    media_type: str
+    width: int | None = None
+    height: int | None = None
+
+    @property
+    def text(self) -> str:
+        if self.kind != "text":
+            raise StegError("watermark contains an image, not text")
+        return self.data.decode("utf-8")
+
+
+@dataclass(frozen=True)
+class ImageEmbedResult:
+    capacity: Capacity
+    stored_bytes: int
+    width: int
+    height: int
+    media_type: str
 
 
 def _dct_matrix(size: int = 8) -> np.ndarray:
@@ -492,35 +521,39 @@ def _extract_bch_stream(
     return _bits_to_bytes(decoded), position
 
 
-def embed_text(
+def _validate_embedding_settings(strength: float, quality: int) -> None:
+    if strength < 8 or strength > 200:
+        raise StegError("strength must be between 8 and 200")
+    if not 1 <= quality <= 100:
+        raise StegError("quality must be between 1 and 100")
+
+
+def _embed_payload(
     input_path: Path,
     output_path: Path,
-    text: str,
+    payload: bytes,
     *,
+    version: int,
     key: str = "",
     strength: float = DEFAULT_STRENGTH,
     redundancy: int = DEFAULT_REDUNDANCY,
     quality: int = 95,
 ) -> Capacity:
-    payload = text.encode("utf-8")
     if len(payload) > 65535:
-        raise StegError("UTF-8 payload is limited to 65,535 bytes")
-    if strength < 8 or strength > 200:
-        raise StegError("strength must be between 8 and 200")
-    if not 1 <= quality <= 100:
-        raise StegError("quality must be between 1 and 100")
+        raise StegError("payload is limited to 65,535 bytes")
+    _validate_embedding_settings(strength, quality)
 
     ycbcr, alpha = _open_image(input_path)
     height, width = ycbcr.shape[:2]
     capacity = image_capacity(width, height, redundancy)
     if len(payload) > capacity.max_payload_bytes:
         raise StegError(
-            f"payload is {len(payload)} UTF-8 bytes, but this image holds at most "
+            f"payload is {len(payload)} bytes, but this image holds at most "
             f"{capacity.max_payload_bytes} bytes at redundancy {redundancy}"
         )
 
     order = _carrier_order(width, height, key)
-    header = HEADER.pack(MAGIC, VERSION, redundancy, len(payload))
+    header = HEADER.pack(MAGIC, version, redundancy, len(payload))
     position = _embed_convolutional_stream(
         ycbcr[:, :, 0], order, 0, header, HEADER_REDUNDANCY, strength, width
     )
@@ -532,7 +565,113 @@ def embed_text(
     return capacity
 
 
-def extract_text(input_path: Path, *, key: str = "", strength: float = DEFAULT_STRENGTH) -> str:
+def embed_text(
+    input_path: Path,
+    output_path: Path,
+    text: str,
+    *,
+    key: str = "",
+    strength: float = DEFAULT_STRENGTH,
+    redundancy: int = DEFAULT_REDUNDANCY,
+    quality: int = 95,
+) -> Capacity:
+    payload = text.encode("utf-8")
+    return _embed_payload(
+        input_path,
+        output_path,
+        payload,
+        version=VERSION,
+        key=key,
+        strength=strength,
+        redundancy=redundancy,
+        quality=quality,
+    )
+
+
+def _hidden_image_bytes(input_path: Path, max_bytes: int) -> tuple[bytes, int, int]:
+    """Normalize and progressively shrink an image to a compact WebP payload."""
+    if max_bytes < 32:
+        raise StegError("carrier image has too little capacity for an image payload")
+    try:
+        with Image.open(input_path) as source:
+            image = ImageOps.exif_transpose(source)
+            image.seek(0)
+            image.load()
+            has_alpha = "A" in image.getbands() or "transparency" in image.info
+            image = image.convert("RGBA" if has_alpha else "RGB")
+            if image.width > 1024 or image.height > 1024:
+                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    except Exception as exc:
+        raise StegError(f"cannot open hidden image '{input_path}': {exc}") from exc
+
+    smallest_size = None
+    while image.width >= 2 and image.height >= 2:
+        for webp_quality in (90, 78, 66, 54, 42, 30, 20):
+            stream = io.BytesIO()
+            try:
+                image.save(stream, format="WEBP", quality=webp_quality, method=6)
+            except Exception as exc:
+                raise StegError(f"cannot encode hidden image as WebP: {exc}") from exc
+            encoded = stream.getvalue()
+            smallest_size = len(encoded)
+            if len(encoded) <= max_bytes:
+                return encoded, image.width, image.height
+
+        ratio = math.sqrt(max_bytes / max(smallest_size, 1)) * 0.92
+        scale = min(0.85, max(0.5, ratio))
+        next_size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+        if next_size == image.size:
+            break
+        image = image.resize(next_size, Image.Resampling.LANCZOS)
+
+    raise StegError(
+        "hidden image cannot fit in this carrier; use a larger carrier or lower redundancy"
+    )
+
+
+def embed_image(
+    input_path: Path,
+    output_path: Path,
+    hidden_image_path: Path,
+    *,
+    key: str = "",
+    strength: float = DEFAULT_STRENGTH,
+    redundancy: int = DEFAULT_REDUNDANCY,
+    quality: int = 95,
+) -> ImageEmbedResult:
+    _validate_embedding_settings(strength, quality)
+    try:
+        with Image.open(input_path) as carrier:
+            oriented = ImageOps.exif_transpose(carrier)
+            capacity = image_capacity(oriented.width, oriented.height, redundancy)
+            if oriented is not carrier:
+                oriented.close()
+    except Exception as exc:
+        if isinstance(exc, StegError):
+            raise
+        raise StegError(f"cannot open image '{input_path}': {exc}") from exc
+
+    available = capacity.max_payload_bytes - IMAGE_ENVELOPE.size
+    image_data, width, height = _hidden_image_bytes(hidden_image_path, available)
+    payload = IMAGE_ENVELOPE.pack(
+        IMAGE_MAGIC, IMAGE_FORMAT_WEBP, width, height
+    ) + image_data
+    actual_capacity = _embed_payload(
+        input_path,
+        output_path,
+        payload,
+        version=IMAGE_VERSION,
+        key=key,
+        strength=strength,
+        redundancy=redundancy,
+        quality=quality,
+    )
+    return ImageEmbedResult(actual_capacity, len(image_data), width, height, "image/webp")
+
+
+def _extract_raw_payload(
+    input_path: Path, *, key: str = "", strength: float = DEFAULT_STRENGTH
+) -> tuple[int, bytes]:
     if strength < 8 or strength > 200:
         raise StegError("strength must be between 8 and 200")
     ycbcr, _ = _open_image(input_path)
@@ -542,7 +681,7 @@ def extract_text(input_path: Path, *, key: str = "", strength: float = DEFAULT_S
         ycbcr[:, :, 0], order, 0, HEADER.size, HEADER_REDUNDANCY, strength, width
     )
     magic, version, redundancy, payload_length = HEADER.unpack(header)
-    if magic != MAGIC or version not in {LEGACY_VERSION, VERSION}:
+    if magic != MAGIC or version not in {LEGACY_VERSION, VERSION, IMAGE_VERSION}:
         raise StegError("watermark header not found (wrong key/strength, damaged image, or no watermark)")
     if redundancy < 1 or redundancy > 15 or redundancy % 2 == 0:
         raise StegError("watermark header is damaged (invalid redundancy)")
@@ -553,10 +692,42 @@ def extract_text(input_path: Path, *, key: str = "", strength: float = DEFAULT_S
     actual_checksum = struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
     if stored_checksum != actual_checksum:
         raise StegError("watermark payload failed CRC (image is too damaged or settings are wrong)")
+    return version, payload
+
+
+def extract_payload(
+    input_path: Path, *, key: str = "", strength: float = DEFAULT_STRENGTH
+) -> WatermarkPayload:
+    version, payload = _extract_raw_payload(input_path, key=key, strength=strength)
+    if version in {LEGACY_VERSION, VERSION}:
+        try:
+            payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StegError("watermark passed CRC but is not valid UTF-8") from exc
+        return WatermarkPayload("text", payload, "text/plain; charset=utf-8")
+
+    if len(payload) <= IMAGE_ENVELOPE.size:
+        raise StegError("image watermark payload is incomplete")
+    image_magic, image_format, width, height = IMAGE_ENVELOPE.unpack(
+        payload[: IMAGE_ENVELOPE.size]
+    )
+    if image_magic != IMAGE_MAGIC or image_format != IMAGE_FORMAT_WEBP:
+        raise StegError("image watermark payload header is damaged")
+    image_data = payload[IMAGE_ENVELOPE.size :]
     try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise StegError("watermark passed CRC but is not valid UTF-8") from exc
+        with Image.open(io.BytesIO(image_data)) as decoded:
+            decoded.load()
+            if decoded.size != (width, height):
+                raise StegError("image watermark dimensions do not match its payload")
+    except StegError:
+        raise
+    except Exception as exc:
+        raise StegError("recovered image payload is not a valid WebP image") from exc
+    return WatermarkPayload("image", image_data, "image/webp", width, height)
+
+
+def extract_text(input_path: Path, *, key: str = "", strength: float = DEFAULT_STRENGTH) -> str:
+    return extract_payload(input_path, key=key, strength=strength).text
 
 
 def _positive_float(value: str) -> float:

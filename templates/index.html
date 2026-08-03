@@ -4,15 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f5f7fa" />
-    <title>影像文字浮水印</title>
+    <title>影像隱寫浮水印</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
   </head>
   <body>
     <header class="topbar">
-      <div class="brand" aria-label="影像文字浮水印">
+      <div class="brand" aria-label="影像隱寫浮水印">
         <span class="brand-mark" aria-hidden="true"><span></span></span>
         <span>
-          <strong>影像文字浮水印</strong>
+          <strong>影像隱寫浮水印</strong>
           <small>本機工具</small>
         </span>
       </div>
@@ -22,18 +22,18 @@
     <main class="page">
       <section class="heading">
         <p class="eyebrow">工作區</p>
-        <h1>圖片文字處理</h1>
-        <p>把文字嵌入圖片，或從已處理的圖片讀取文字。</p>
+        <h1>圖片隱寫處理</h1>
+        <p>把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。</p>
       </section>
 
       <div class="mode-tabs" role="tablist" aria-label="處理模式">
         <button class="mode-tab active" type="button" role="tab" aria-selected="true" data-mode="embed">
           <span class="tab-index">01</span>
-          <span><strong>嵌入文字</strong><small>建立帶有隱藏文字的圖片</small></span>
+          <span><strong>嵌入內容</strong><small>隱藏文字或圖片</small></span>
         </button>
         <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="extract">
           <span class="tab-index">02</span>
-          <span><strong>讀取文字</strong><small>從圖片取回已嵌入的內容</small></span>
+          <span><strong>讀取內容</strong><small>取回隱藏文字或圖片</small></span>
         </button>
       </div>
 
@@ -59,13 +59,28 @@
 
           <div class="form-block embed-only">
             <div class="section-label"><span>2</span>輸入內容</div>
-            <label class="field-label" for="message">隱藏文字</label>
-            <div class="textarea-wrap">
-              <textarea id="message" name="text" rows="6" placeholder="輸入要嵌入圖片的文字"></textarea>
-              <div class="count-line">
-                <span id="message-count">0 bytes</span>
-                <span id="capacity-label">選擇圖片後顯示容量</span>
+            <div class="payload-switch" role="tablist" aria-label="隱藏內容類型">
+              <button class="payload-tab active" type="button" role="tab" aria-selected="true" data-payload="text">文字</button>
+              <button class="payload-tab" type="button" role="tab" aria-selected="false" data-payload="image">圖片</button>
+            </div>
+            <div data-payload-panel="text">
+              <label class="field-label" for="message">隱藏文字</label>
+              <div class="textarea-wrap">
+                <textarea id="message" name="text" rows="6" placeholder="輸入要嵌入圖片的文字"></textarea>
+                <div class="count-line">
+                  <span id="message-count">0 bytes</span>
+                  <span id="capacity-label">選擇圖片後顯示容量</span>
+                </div>
               </div>
+            </div>
+            <div data-payload-panel="image" hidden>
+              <label class="field-label" for="hidden-image-input">要隱藏的圖片</label>
+              <label class="hidden-image-picker" for="hidden-image-input">
+                <input id="hidden-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+                <img id="hidden-image-thumb" alt="隱藏圖片預覽" hidden />
+                <span id="hidden-image-copy"><strong>選擇圖片</strong><small>會自動轉成 WebP 並縮小至可用容量</small></span>
+              </label>
+              <p class="payload-note" id="image-capacity-label">選擇載體圖片後顯示可用容量。</p>
             </div>
           </div>
 
@@ -130,7 +145,7 @@
 
           <div class="form-error" id="form-error" role="alert" hidden></div>
           <button class="primary-button" id="submit-button" type="submit">
-            <span class="button-label">產生浮水印圖片</span>
+            <span class="button-label">產生隱寫圖片</span>
             <span class="button-arrow" aria-hidden="true">→</span>
           </button>
         </form>
@@ -157,15 +172,18 @@
           <div class="image-stats" id="image-stats" hidden>
             <div><span>尺寸</span><strong id="stat-dimensions">—</strong></div>
             <div><span>檔案大小</span><strong id="stat-size">—</strong></div>
-            <div><span>文字容量</span><strong id="stat-capacity">—</strong></div>
+            <div><span>內容容量</span><strong id="stat-capacity">—</strong></div>
           </div>
 
           <section class="result-card" id="result-card" hidden>
             <div class="result-header">
               <div><span class="result-dot"></span><strong>讀取結果</strong></div>
-              <button id="copy-result" type="button">複製文字</button>
+              <button id="result-action" type="button">複製文字</button>
             </div>
             <pre id="result-text"></pre>
+            <div class="result-image" id="result-image-wrap" hidden>
+              <img id="result-image" alt="取回的隱藏圖片" />
+            </div>
             <small id="result-meta"></small>
           </section>
 

@@ -15,6 +15,12 @@ def sample_png() -> bytes:
     return stream.getvalue()
 
 
+def hidden_png() -> bytes:
+    stream = io.BytesIO()
+    Image.new("RGBA", (12, 10), (23, 137, 114, 220)).save(stream, format="PNG")
+    return stream.getvalue()
+
+
 class WebAppTests(unittest.TestCase):
     def setUp(self):
         app.config.update(TESTING=True)
@@ -27,8 +33,9 @@ class WebAppTests(unittest.TestCase):
     def test_home_page(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("影像文字浮水印".encode(), response.data)
+        self.assertIn("影像隱寫浮水印".encode(), response.data)
         self.assertIn("貼上圖片".encode(), response.data)
+        self.assertIn("要隱藏的圖片".encode(), response.data)
 
     def test_capacity(self):
         response = self.client.post(
@@ -75,6 +82,37 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("請輸入", response.get_json()["error"])
+
+    def test_embed_and_extract_hidden_image(self):
+        embedded = self.client.post(
+            "/api/embed",
+            data={
+                "image": self.image_upload(),
+                "payload_type": "image",
+                "hidden_image": (io.BytesIO(hidden_png()), "secret.png"),
+                "key": "image-key",
+                "strength": "56",
+                "redundancy": "3",
+                "quality": "95",
+                "output_format": "png",
+            },
+        )
+        self.assertEqual(embedded.status_code, 200)
+        self.assertEqual(embedded.headers["X-Payload-Type"], "image")
+
+        extracted = self.client.post(
+            "/api/extract",
+            data={
+                "image": self.image_upload(embedded.data),
+                "key": "image-key",
+                "strength": "56",
+            },
+        )
+        self.assertEqual(extracted.status_code, 200)
+        payload = extracted.get_json()
+        self.assertEqual(payload["type"], "image")
+        self.assertEqual(payload["mime_type"], "image/webp")
+        self.assertEqual((payload["width"], payload["height"]), (12, 10))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,15 @@
 const state = {
   mode: "embed",
+  payloadType: "text",
   file: null,
   objectUrl: null,
   capacity: null,
   dimensions: null,
   busy: false,
+  hiddenFile: null,
+  hiddenObjectUrl: null,
+  extractedObjectUrl: null,
+  extractedFilename: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -71,14 +76,32 @@ function updateMessageCount() {
   $("#message-count").classList.toggle("over-limit", isOver);
   if (Number.isInteger(state.capacity)) {
     $("#capacity-label").textContent = `上限 ${state.capacity.toLocaleString()} bytes`;
+    $("#image-capacity-label").textContent = `可用 ${state.capacity.toLocaleString()} bytes；圖片會自動壓縮與縮小。`;
     $("#capacity-label").classList.toggle("over-limit", isOver);
   }
+}
+
+function setPayloadType(type) {
+  state.payloadType = type;
+  clearError();
+  $$(".payload-tab").forEach((tab) => {
+    const active = tab.dataset.payload === type;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  $$('[data-payload-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.payloadPanel !== type;
+  });
+  $("#processing-label").textContent = type === "text" ? "正在嵌入文字" : "正在嵌入圖片";
 }
 
 function setMode(mode) {
   state.mode = mode;
   clearError();
   resultCard.hidden = true;
+  if (state.extractedObjectUrl) URL.revokeObjectURL(state.extractedObjectUrl);
+  state.extractedObjectUrl = null;
+  state.extractedFilename = null;
   $$(".mode-tab").forEach((tab) => {
     const active = tab.dataset.mode === mode;
     tab.classList.toggle("active", active);
@@ -86,8 +109,10 @@ function setMode(mode) {
   });
   $$(".embed-only").forEach((node) => { node.hidden = mode !== "embed"; });
   $(".step-number").textContent = mode === "embed" ? "3" : "2";
-  $(".button-label").textContent = mode === "embed" ? "產生浮水印圖片" : "讀取圖片文字";
-  $("#processing-label").textContent = mode === "embed" ? "正在嵌入文字" : "正在讀取文字";
+  $(".button-label").textContent = mode === "embed" ? "產生隱寫圖片" : "讀取隱藏內容";
+  $("#processing-label").textContent = mode === "embed"
+    ? (state.payloadType === "text" ? "正在嵌入文字" : "正在嵌入圖片")
+    : "正在讀取內容";
   updateCapacity();
 }
 
@@ -107,8 +132,28 @@ function clearFile() {
   $("#format-badge").hidden = true;
   $("#preview-title").textContent = "尚未選擇圖片";
   $("#capacity-label").textContent = "選擇圖片後顯示容量";
+  $("#image-capacity-label").textContent = "選擇載體圖片後顯示可用容量。";
   resultCard.hidden = true;
   updateMessageCount();
+}
+
+async function selectHiddenImage(file) {
+  clearError();
+  if (!file || !supportedImageTypes.has(file.type.toLowerCase())) {
+    showError("隱藏圖片只支援 PNG、JPEG、WebP 或 BMP。");
+    return;
+  }
+  if (file.size > 30 * 1024 * 1024) {
+    showError("隱藏圖片不可大於 30 MB。");
+    return;
+  }
+  if (state.hiddenObjectUrl) URL.revokeObjectURL(state.hiddenObjectUrl);
+  state.hiddenFile = file;
+  state.hiddenObjectUrl = URL.createObjectURL(file);
+  $("#hidden-image-thumb").src = state.hiddenObjectUrl;
+  $("#hidden-image-thumb").hidden = false;
+  $("#hidden-image-copy strong").textContent = file.name;
+  $("#hidden-image-copy small").textContent = `${formatBytes(file.size)} · 按一下可更換`;
 }
 
 async function selectImage(file) {
@@ -212,11 +257,17 @@ form.addEventListener("submit", async (event) => {
     return;
   }
   if (state.mode === "embed" && !message.value) {
-    showError("請輸入要隱藏的文字。");
-    message.focus();
+    if (state.payloadType === "text") {
+      showError("請輸入要隱藏的文字。");
+      message.focus();
+      return;
+    }
+  }
+  if (state.mode === "embed" && state.payloadType === "image" && !state.hiddenFile) {
+    showError("請選擇要隱藏的圖片。");
     return;
   }
-  if (state.mode === "embed" && Number.isInteger(state.capacity) && utf8Length(message.value) > state.capacity) {
+  if (state.mode === "embed" && state.payloadType === "text" && Number.isInteger(state.capacity) && utf8Length(message.value) > state.capacity) {
     showError("文字超出這張圖片目前可用的容量。");
     return;
   }
@@ -225,11 +276,16 @@ form.addEventListener("submit", async (event) => {
   data.append("image", state.file);
   data.append("key", useKey.checked ? keyInput.value : "");
   data.append("strength", $("#strength").value);
-  setBusy(true, state.mode === "embed" ? "正在嵌入文字" : "正在讀取文字");
+  const busyLabel = state.mode === "extract"
+    ? "正在讀取內容"
+    : (state.payloadType === "text" ? "正在嵌入文字" : "正在壓縮並嵌入圖片");
+  setBusy(true, busyLabel);
 
   try {
     if (state.mode === "embed") {
-      data.append("text", message.value);
+      data.append("payload_type", state.payloadType);
+      if (state.payloadType === "text") data.append("text", message.value);
+      else data.append("hidden_image", state.hiddenFile);
       data.append("redundancy", $("#redundancy").value);
       data.append("output_format", $("#output-format").value);
       data.append("quality", $("#quality").value);
@@ -249,8 +305,27 @@ form.addEventListener("submit", async (event) => {
       const response = await fetch("/api/extract", { method: "POST", body: data });
       if (!response.ok) throw new Error(await parseError(response));
       const payload = await response.json();
-      $("#result-text").textContent = payload.text;
-      $("#result-meta").textContent = `${payload.byte_count.toLocaleString()} bytes`;
+      if (state.extractedObjectUrl) URL.revokeObjectURL(state.extractedObjectUrl);
+      if (payload.type === "image") {
+        const binary = atob(payload.image_base64);
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        const blob = new Blob([bytes], { type: payload.mime_type });
+        state.extractedObjectUrl = URL.createObjectURL(blob);
+        state.extractedFilename = payload.filename || "hidden-image.webp";
+        $("#result-image").src = state.extractedObjectUrl;
+        $("#result-image-wrap").hidden = false;
+        $("#result-text").hidden = true;
+        $("#result-action").textContent = "下載圖片";
+        $("#result-meta").textContent = `${payload.width} × ${payload.height} · ${formatBytes(payload.byte_count)}`;
+      } else {
+        state.extractedObjectUrl = null;
+        state.extractedFilename = null;
+        $("#result-text").textContent = payload.text;
+        $("#result-text").hidden = false;
+        $("#result-image-wrap").hidden = true;
+        $("#result-action").textContent = "複製文字";
+        $("#result-meta").textContent = `${payload.byte_count.toLocaleString()} bytes`;
+      }
       resultCard.hidden = false;
       resultCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
@@ -262,7 +337,9 @@ form.addEventListener("submit", async (event) => {
 });
 
 $$(".mode-tab").forEach((tab) => tab.addEventListener("click", () => setMode(tab.dataset.mode)));
+$$(".payload-tab").forEach((tab) => tab.addEventListener("click", () => setPayloadType(tab.dataset.payload)));
 fileInput.addEventListener("change", () => selectImage(fileInput.files[0]));
+$("#hidden-image-input").addEventListener("change", (event) => selectHiddenImage(event.target.files[0]));
 $("#remove-file").addEventListener("click", clearFile);
 message.addEventListener("input", updateMessageCount);
 $("#redundancy").addEventListener("change", updateCapacity);
@@ -311,9 +388,17 @@ $("#strength").addEventListener("input", (event) => { $("#strength-value").textC
 $("#quality").addEventListener("input", (event) => { $("#quality-value").textContent = event.target.value; });
 $("#output-format").addEventListener("change", (event) => { $("#quality-field").hidden = event.target.value === "png"; });
 
-$("#copy-result").addEventListener("click", async () => {
-  await navigator.clipboard.writeText($("#result-text").textContent);
-  toast("文字已複製");
+$("#result-action").addEventListener("click", async () => {
+  if (state.extractedObjectUrl) {
+    const link = document.createElement("a");
+    link.href = state.extractedObjectUrl;
+    link.download = state.extractedFilename || "hidden-image.webp";
+    link.click();
+    toast("隱藏圖片已下載");
+  } else {
+    await navigator.clipboard.writeText($("#result-text").textContent);
+    toast("文字已複製");
+  }
 });
 
 updateMessageCount();

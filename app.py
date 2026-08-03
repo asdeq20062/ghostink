@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -14,8 +16,9 @@ from robust_steg import (
     DEFAULT_REDUNDANCY,
     DEFAULT_STRENGTH,
     StegError,
+    embed_image,
     embed_text,
-    extract_text,
+    extract_payload,
     image_capacity,
 )
 
@@ -57,6 +60,21 @@ def _uploaded_image() -> tuple[bytes, str, str]:
     return data, original_name, suffix
 
 
+def _uploaded_hidden_image() -> tuple[bytes, str, str]:
+    upload = request.files.get("hidden_image")
+    if upload is None or not upload.filename:
+        raise StegError("請選擇要隱藏的圖片")
+
+    original_name = Path(upload.filename).name
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise StegError("隱藏圖片只支援 PNG、JPEG、WebP 或 BMP")
+    data = upload.read()
+    if not data:
+        raise StegError("要隱藏的圖片檔案是空的")
+    return data, original_name, suffix
+
+
 def _save_upload(root: Path, data: bytes, name: str) -> Path:
     path = root / name
     path.write_bytes(data)
@@ -90,9 +108,15 @@ def capacity():
 @app.post("/api/embed")
 def embed():
     data, original_name, suffix = _uploaded_image()
+    payload_type = request.form.get("payload_type", "text").lower()
+    if payload_type not in {"text", "image"}:
+        raise StegError("隱藏內容類型無效")
     text = request.form.get("text", "")
-    if not text:
+    hidden_upload = None
+    if payload_type == "text" and not text:
         raise StegError("請輸入要隱藏的文字")
+    if payload_type == "image":
+        hidden_upload = _uploaded_hidden_image()
 
     strength = float(_number("strength", DEFAULT_STRENGTH, float))
     redundancy = int(_number("redundancy", DEFAULT_REDUNDANCY, int))
@@ -107,15 +131,30 @@ def embed():
         root = Path(directory)
         input_path = _save_upload(root, data, f"input{suffix}")
         output_path = root / f"output{output_suffix}"
-        result = embed_text(
-            input_path,
-            output_path,
-            text,
-            key=key,
-            strength=strength,
-            redundancy=redundancy,
-            quality=quality,
-        )
+        if payload_type == "image" and hidden_upload is not None:
+            hidden_data, _, hidden_suffix = hidden_upload
+            hidden_path = _save_upload(root, hidden_data, f"hidden{hidden_suffix}")
+            image_result = embed_image(
+                input_path,
+                output_path,
+                hidden_path,
+                key=key,
+                strength=strength,
+                redundancy=redundancy,
+                quality=quality,
+            )
+            result = image_result.capacity
+        else:
+            image_result = None
+            result = embed_text(
+                input_path,
+                output_path,
+                text,
+                key=key,
+                strength=strength,
+                redundancy=redundancy,
+                quality=quality,
+            )
         output = io.BytesIO(output_path.read_bytes())
 
     stem = Path(original_name).stem or "image"
@@ -126,6 +165,10 @@ def embed():
         download_name=f"{stem}_watermarked{output_suffix}",
     )
     response.headers["X-Capacity-Bytes"] = str(result.max_payload_bytes)
+    response.headers["X-Payload-Type"] = payload_type
+    if image_result is not None:
+        response.headers["X-Hidden-Image-Size"] = f"{image_result.width}x{image_result.height}"
+        response.headers["X-Hidden-Image-Bytes"] = str(image_result.stored_bytes)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -138,8 +181,19 @@ def extract():
 
     with TemporaryDirectory(prefix="magic-image-") as directory:
         input_path = _save_upload(Path(directory), data, f"input{suffix}")
-        text = extract_text(input_path, key=key, strength=strength)
-    return jsonify(text=text, byte_count=len(text.encode("utf-8")))
+        payload = extract_payload(input_path, key=key, strength=strength)
+    if payload.kind == "text":
+        text = payload.text
+        return jsonify(type="text", text=text, byte_count=len(payload.data))
+    return jsonify(
+        type="image",
+        image_base64=base64.b64encode(payload.data).decode("ascii"),
+        mime_type=payload.media_type,
+        filename="hidden-image.webp",
+        byte_count=len(payload.data),
+        width=payload.width,
+        height=payload.height,
+    )
 
 
 @app.errorhandler(StegError)
@@ -158,4 +212,4 @@ def handle_server_error(_error):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8080, debug=False)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "8080")), debug=False)

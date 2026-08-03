@@ -1,3 +1,4 @@
+import io
 import math
 import struct
 import tempfile
@@ -8,7 +9,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from robust_steg import StegError, embed_text, extract_text, image_capacity
+from robust_steg import (
+    StegError,
+    embed_image,
+    embed_text,
+    extract_payload,
+    extract_text,
+    image_capacity,
+)
 import robust_steg as steg
 
 
@@ -45,6 +53,19 @@ class RobustStegTests(unittest.TestCase):
         embed_text(self.source, output, "secret", key="right")
         with self.assertRaises(StegError):
             extract_text(output, key="wrong")
+
+    def test_image_payload_round_trip(self):
+        hidden = self.root / "hidden.png"
+        Image.new("RGBA", (16, 12), (190, 44, 72, 180)).save(hidden)
+        output = self.root / "image-marked.png"
+        result = embed_image(self.source, output, hidden, key="picture")
+        recovered = extract_payload(output, key="picture")
+        self.assertEqual(recovered.kind, "image")
+        self.assertEqual(recovered.media_type, "image/webp")
+        self.assertEqual((recovered.width, recovered.height), (16, 12))
+        self.assertGreater(result.stored_bytes, 0)
+        with Image.open(io.BytesIO(recovered.data)) as image:
+            self.assertEqual(image.size, (16, 12))
 
     def test_jpeg_recompression(self):
         marked = self.root / "marked.png"
