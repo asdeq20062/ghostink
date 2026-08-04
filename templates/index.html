@@ -13,7 +13,7 @@
         <span class="brand-mark" aria-hidden="true"><span></span></span>
         <span>
           <strong>影像隱寫浮水印</strong>
-          <small>本機工具</small>
+          <small>圖片與文字工具</small>
         </span>
       </div>
       <div class="local-state"><span aria-hidden="true"></span>本機處理</div>
@@ -22,8 +22,8 @@
     <main class="page">
       <section class="heading">
         <p class="eyebrow">工作區</p>
-        <h1>圖片隱寫處理</h1>
-        <p>把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。</p>
+        <h1 id="page-title">圖片隱寫處理</h1>
+        <p id="page-description">把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。</p>
       </section>
 
       <div class="mode-tabs" role="tablist" aria-label="處理模式">
@@ -35,9 +35,13 @@
           <span class="tab-index">02</span>
           <span><strong>讀取內容</strong><small>取回隱藏文字或圖片</small></span>
         </button>
+        <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="zero-width">
+          <span class="tab-index">03</span>
+          <span><strong>文字隱寫</strong><small>零寬字元隱寫與提取</small></span>
+        </button>
       </div>
 
-      <section class="workspace">
+      <section class="workspace" id="image-workspace">
         <form class="control-panel" id="process-form" novalidate>
           <div class="section-label"><span>1</span>選擇圖片</div>
           <label class="dropzone" id="dropzone" for="image-input">
@@ -191,9 +195,89 @@
           <p class="privacy-note"><span aria-hidden="true">⌁</span>圖片由這部裝置上的本機服務處理。</p>
         </aside>
       </section>
+
+      <section class="workspace zero-width-workspace" id="zero-width-workspace" hidden>
+        <form class="control-panel" id="zero-width-form" novalidate>
+          <div class="section-label"><span>1</span>選擇操作</div>
+          <div class="payload-switch" role="tablist" aria-label="文字隱寫操作">
+            <button class="zero-width-tab active" type="button" role="tab" aria-selected="true" data-zero-width-mode="hide">隱寫</button>
+            <button class="zero-width-tab" type="button" role="tab" aria-selected="false" data-zero-width-mode="extract">提取</button>
+          </div>
+
+          <div id="zero-width-hide-panel">
+            <div class="form-block compact-block">
+              <div class="section-label"><span>2</span>載體文字</div>
+              <label class="field-label" for="carrier-text">外觀看得到的文字</label>
+              <div class="textarea-wrap">
+                <textarea id="carrier-text" rows="5" placeholder="輸入用來承載秘密內容的普通文字"></textarea>
+                <div class="count-line"><span id="carrier-count">0 個字元</span><span>原文外觀不變</span></div>
+              </div>
+            </div>
+            <div class="form-block">
+              <div class="section-label"><span>3</span>秘密文字</div>
+              <label class="field-label" for="secret-text">要隱藏的內容</label>
+              <div class="textarea-wrap">
+                <textarea id="secret-text" rows="5" placeholder="支援中文、Emoji 與多語言文字"></textarea>
+                <div class="count-line"><span id="secret-count">0 bytes</span><span id="secret-bits">會產生 0 個零寬字元</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="zero-width-extract-panel" hidden>
+            <div class="form-block compact-block">
+              <div class="section-label"><span>2</span>含隱寫的文字</div>
+              <label class="field-label" for="stego-text">貼上要檢查的完整文字</label>
+              <div class="textarea-wrap">
+                <textarea id="stego-text" rows="10" placeholder="貼上含有 U+200B / U+200C 的文字"></textarea>
+                <div class="count-line"><span id="stego-count">0 個零寬字元</span><span>每 8 個字元為 1 byte</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-error" id="zero-width-error" role="alert" hidden></div>
+          <button class="primary-button" id="zero-width-submit" type="submit">
+            <span class="button-label" id="zero-width-submit-label">產生隱寫文字</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <aside class="preview-panel zero-width-preview">
+          <div class="preview-heading">
+            <div><span>輸出</span><strong id="zero-width-result-title">等待輸入內容</strong></div>
+            <span class="format-badge">UTF-8</span>
+          </div>
+
+          <div class="mapping-card" aria-label="零寬字元位元對照">
+            <div><code>U+200B</code><span>ZERO WIDTH SPACE</span><strong>0</strong></div>
+            <div><code>U+200C</code><span>ZERO WIDTH NON-JOINER</span><strong>1</strong></div>
+          </div>
+
+          <div class="zero-width-empty" id="zero-width-empty">
+            <span class="binary-mark" aria-hidden="true">01</span>
+            <strong>零寬文字結果</strong>
+            <span>完成隱寫或提取後會顯示在這裡</span>
+          </div>
+
+          <section class="result-card zero-width-result" id="zero-width-result" hidden>
+            <div class="result-header">
+              <div><span class="result-dot"></span><strong id="zero-width-result-label">隱寫結果</strong></div>
+              <button id="zero-width-copy" type="button">COPY</button>
+            </div>
+            <textarea id="zero-width-output" readonly aria-label="零寬文字處理結果"></textarea>
+            <small id="zero-width-meta"></small>
+          </section>
+
+          <div class="zero-width-note">
+            <strong>如何運作</strong>
+            <p>秘密文字會先轉成 UTF-8 bytes，再逐 bit 轉為零寬字元。複製後看起來仍只有載體文字。</p>
+          </div>
+          <p class="privacy-note"><span aria-hidden="true">⌁</span>文字只在瀏覽器中處理，不會上傳。</p>
+        </aside>
+      </section>
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="{{ url_for('static', filename='zero_width.js') }}" defer></script>
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   </body>
 </html>

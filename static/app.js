@@ -26,6 +26,8 @@ const message = $("#message");
 const useKey = $("#use-key");
 const keyInput = $("#key");
 const resultCard = $("#result-card");
+const zeroWidthForm = $("#zero-width-form");
+let zeroWidthMode = "hide";
 const supportedImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/bmp", "image/x-ms-bmp"]);
 const pastedImageExtensions = {
   "image/png": "png",
@@ -116,6 +118,14 @@ function setMode(mode) {
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   });
+  const isZeroWidth = mode === "zero-width";
+  $("#image-workspace").hidden = isZeroWidth;
+  $("#zero-width-workspace").hidden = !isZeroWidth;
+  $("#page-title").textContent = isZeroWidth ? "文字隱寫處理" : "圖片隱寫處理";
+  $("#page-description").textContent = isZeroWidth
+    ? "用 U+200B 與 U+200C 把秘密文字藏進另一段文字，亦可隨時提取。"
+    : "把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。";
+  if (isZeroWidth) return;
   $$(".embed-only").forEach((node) => { node.hidden = mode !== "embed"; });
   $(".step-number").textContent = mode === "embed" ? "3" : "2";
   $(".button-label").textContent = mode === "embed" ? "產生隱寫圖片" : "讀取隱藏內容";
@@ -123,6 +133,56 @@ function setMode(mode) {
     ? (state.payloadType === "text" ? "正在嵌入文字" : "正在嵌入圖片")
     : "正在讀取內容";
   updateCapacity();
+}
+
+function setZeroWidthMode(mode) {
+  zeroWidthMode = mode;
+  $("#zero-width-error").hidden = true;
+  $$(".zero-width-tab").forEach((tab) => {
+    const active = tab.dataset.zeroWidthMode === mode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  $("#zero-width-hide-panel").hidden = mode !== "hide";
+  $("#zero-width-extract-panel").hidden = mode !== "extract";
+  $("#zero-width-submit-label").textContent = mode === "hide" ? "產生隱寫文字" : "提取秘密文字";
+  $("#zero-width-result").hidden = true;
+  $("#zero-width-empty").hidden = false;
+  $("#zero-width-result-title").textContent = "等待輸入內容";
+}
+
+function updateZeroWidthCounts() {
+  const carrierLength = [...$("#carrier-text").value].length;
+  const secretBytes = utf8Length($("#secret-text").value);
+  const zeroWidthCount = [...$("#stego-text").value].filter(
+    (character) => character === ZeroWidthSteg.ZERO || character === ZeroWidthSteg.ONE,
+  ).length;
+  $("#carrier-count").textContent = `${carrierLength.toLocaleString()} 個字元`;
+  $("#secret-count").textContent = `${secretBytes.toLocaleString()} bytes`;
+  $("#secret-bits").textContent = `會產生 ${(secretBytes * 8).toLocaleString()} 個零寬字元`;
+  $("#stego-count").textContent = `${zeroWidthCount.toLocaleString()} 個零寬字元`;
+}
+
+function showZeroWidthError(text) {
+  const error = $("#zero-width-error");
+  error.textContent = text;
+  error.hidden = false;
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const helper = document.createElement("textarea");
+    helper.value = value;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    document.execCommand("copy");
+    helper.remove();
+  }
 }
 
 function clearFile() {
@@ -352,6 +412,7 @@ form.addEventListener("submit", async (event) => {
 
 $$(".mode-tab").forEach((tab) => tab.addEventListener("click", () => setMode(tab.dataset.mode)));
 $$(".payload-tab").forEach((tab) => tab.addEventListener("click", () => setPayloadType(tab.dataset.payload)));
+$$(".zero-width-tab").forEach((tab) => tab.addEventListener("click", () => setZeroWidthMode(tab.dataset.zeroWidthMode)));
 fileInput.addEventListener("change", () => selectImage(fileInput.files[0]));
 $("#hidden-image-input").addEventListener("change", (event) => selectHiddenImage(event.target.files[0]));
 $("#remove-file").addEventListener("click", clearFile);
@@ -420,6 +481,33 @@ $("#result-action").addEventListener("click", async () => {
   }
 });
 
+zeroWidthForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  $("#zero-width-error").hidden = true;
+  try {
+    const result = zeroWidthMode === "hide"
+      ? ZeroWidthSteg.hide($("#carrier-text").value, $("#secret-text").value)
+      : ZeroWidthSteg.extract($("#stego-text").value);
+    $("#zero-width-output").value = result.text;
+    $("#zero-width-result-label").textContent = zeroWidthMode === "hide" ? "隱寫結果" : "提取結果";
+    $("#zero-width-result-title").textContent = zeroWidthMode === "hide" ? "隱寫文字已產生" : "秘密文字已提取";
+    $("#zero-width-meta").textContent = `${result.byteCount.toLocaleString()} bytes · ${result.bitCount.toLocaleString()} 個零寬字元`;
+    $("#zero-width-empty").hidden = true;
+    $("#zero-width-result").hidden = false;
+    $("#zero-width-result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    showZeroWidthError(error.message || "文字隱寫處理失敗。");
+  }
+});
+
+$("#carrier-text").addEventListener("input", updateZeroWidthCounts);
+$("#secret-text").addEventListener("input", updateZeroWidthCounts);
+$("#stego-text").addEventListener("input", updateZeroWidthCounts);
+$("#zero-width-copy").addEventListener("click", async () => {
+  await copyText($("#zero-width-output").value);
+  toast(zeroWidthMode === "hide" ? "隱寫文字已複製" : "秘密文字已複製");
+});
+
 window.addEventListener("beforeunload", () => {
   if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
   if (state.hiddenObjectUrl) URL.revokeObjectURL(state.hiddenObjectUrl);
@@ -428,3 +516,4 @@ window.addEventListener("beforeunload", () => {
 });
 
 updateMessageCount();
+updateZeroWidthCounts();

@@ -38,6 +38,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("要隱藏的圖片".encode(), response.data)
         self.assertIn("按一下選擇，或貼上圖片".encode(), response.data)
         self.assertIn("按右鍵使用瀏覽器選單下載".encode(), response.data)
+        self.assertIn("文字隱寫".encode(), response.data)
+        self.assertIn("U+200B".encode(), response.data)
+        self.assertIn("U+200C".encode(), response.data)
+        self.assertIn(">COPY<".encode(), response.data)
 
     def test_capacity(self):
         response = self.client.post(
