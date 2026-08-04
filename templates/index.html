@@ -231,9 +231,9 @@
           <div class="form-block lsb-embed-only">
             <div class="section-label"><span>3</span>選擇秘密圖片</div>
             <label class="hidden-image-picker" id="lsb-secret-picker" for="lsb-secret-input">
-              <input id="lsb-secret-input" name="hidden_image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+              <input id="lsb-secret-input" name="hidden_image" type="file" accept="image/*" />
               <img id="lsb-secret-thumb" alt="秘密圖片預覽" hidden />
-              <span id="lsb-secret-copy"><strong>選擇要隱藏的圖片</strong><small>圖片會轉成無損 PNG 後寫入 LSB</small></span>
+              <span id="lsb-secret-copy"><strong>選擇要隱藏的圖片</strong><small>JPEG、PNG、WebP、GIF 等圖片會以原始格式寫入</small></span>
             </label>
             <p class="payload-note" id="lsb-capacity-label">選擇載體圖片後顯示容量。</p>
           </div>

@@ -1,10 +1,12 @@
 import io
 import unittest
+import zlib
 
 import numpy as np
 from PIL import Image
 
 from app import app
+from lsb_steg import LEGACY_HEADER, LEGACY_VERSION, MAGIC
 
 
 def sample_png() -> bytes:
@@ -19,6 +21,33 @@ def hidden_png() -> bytes:
     stream = io.BytesIO()
     Image.new("RGBA", (12, 10), (23, 137, 114, 220)).save(stream, format="PNG")
     return stream.getvalue()
+
+
+def hidden_image(image_format: str) -> bytes:
+    stream = io.BytesIO()
+    image = Image.new("RGB", (18, 14), (31, 142, 119))
+    image.save(stream, format=image_format)
+    return stream.getvalue()
+
+
+def legacy_lsb_image(carrier_data: bytes, secret_data: bytes) -> bytes:
+    with Image.open(io.BytesIO(carrier_data)) as carrier, Image.open(io.BytesIO(secret_data)) as secret:
+        width, height = secret.size
+        packet = LEGACY_HEADER.pack(
+            MAGIC,
+            LEGACY_VERSION,
+            len(secret_data),
+            width,
+            height,
+            zlib.crc32(secret_data) & 0xFFFFFFFF,
+        ) + secret_data
+        bits = np.unpackbits(np.frombuffer(packet, dtype=np.uint8))
+        pixels = np.asarray(carrier.convert("RGB"), dtype=np.uint8).copy()
+        flat = pixels.reshape(-1)
+        flat[: len(bits)] = (flat[: len(bits)] & 0xFE) | bits
+        stream = io.BytesIO()
+        Image.fromarray(pixels).save(stream, format="PNG")
+        return stream.getvalue()
 
 
 class WebAppTests(unittest.TestCase):
@@ -152,8 +181,41 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(extracted.status_code, 200)
         self.assertEqual(extracted.mimetype, "image/png")
         self.assertEqual(extracted.headers["X-Hidden-Image-Size"], "12x10")
+        self.assertEqual(extracted.data, secret)
         with Image.open(io.BytesIO(secret)) as original, Image.open(io.BytesIO(extracted.data)) as restored:
             self.assertEqual(original.convert("RGBA").tobytes(), restored.convert("RGBA").tobytes())
+
+    def test_lsb_preserves_multiple_secret_image_formats_exactly(self):
+        formats = {
+            "JPEG": ("secret.jpeg", "JPEG"),
+            "PNG": ("secret.png", "PNG"),
+            "WEBP": ("secret.webp", "WEBP"),
+            "BMP": ("secret.bmp", "BMP"),
+            "GIF": ("secret.gif", "GIF"),
+            "TIFF": ("secret.tiff", "TIFF"),
+        }
+        for image_format, (filename, expected_format) in formats.items():
+            with self.subTest(image_format=image_format):
+                secret = hidden_image(image_format)
+                embedded = self.client.post(
+                    "/api/lsb/embed",
+                    data={
+                        "image": self.image_upload(),
+                        "hidden_image": (io.BytesIO(secret), filename),
+                    },
+                )
+                self.assertEqual(embedded.status_code, 200)
+                self.assertEqual(embedded.headers["X-Hidden-Image-Bytes"], str(len(secret)))
+                self.assertEqual(embedded.headers["X-Hidden-Image-Format"], expected_format)
+
+                extracted = self.client.post(
+                    "/api/lsb/extract",
+                    data={"image": self.image_upload(embedded.data)},
+                )
+                self.assertEqual(extracted.status_code, 200)
+                self.assertTrue(extracted.mimetype.startswith("image/"))
+                self.assertEqual(extracted.headers["X-Hidden-Image-Format"], expected_format)
+                self.assertEqual(extracted.data, secret)
 
     def test_lsb_extract_rejects_plain_image(self):
         response = self.client.post(
@@ -162,6 +224,17 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("LSB", response.get_json()["error"])
+
+    def test_lsb_extract_reads_legacy_png_payload(self):
+        secret = hidden_png()
+        legacy = legacy_lsb_image(self.image, secret)
+        response = self.client.post(
+            "/api/lsb/extract",
+            data={"image": self.image_upload(legacy)},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertEqual(response.data, secret)
 
 
 if __name__ == "__main__":

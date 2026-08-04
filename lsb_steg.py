@@ -14,8 +14,25 @@ from robust_steg import StegError
 
 
 MAGIC = b"LSBI"
-VERSION = 1
-HEADER = struct.Struct(">4sBIIII")  # magic, version, payload bytes, width, height, crc32
+LEGACY_VERSION = 1
+VERSION = 2
+PREFIX = struct.Struct(">4sB")
+LEGACY_HEADER = struct.Struct(">4sBIIII")
+FORMAT_FIELD_BYTES = 32
+HEADER = struct.Struct(f">4sBIIII{FORMAT_FIELD_BYTES}s")
+
+PREFERRED_EXTENSIONS = {
+    "AVIF": ".avif",
+    "BMP": ".bmp",
+    "GIF": ".gif",
+    "ICO": ".ico",
+    "JPEG": ".jpg",
+    "JPEG2000": ".jp2",
+    "PNG": ".png",
+    "PPM": ".ppm",
+    "TIFF": ".tiff",
+    "WEBP": ".webp",
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +50,7 @@ class LsbEmbedResult:
     payload_bytes: int
     width: int
     height: int
+    image_format: str
 
 
 @dataclass(frozen=True)
@@ -40,15 +58,50 @@ class LsbExtractResult:
     image_bytes: bytes
     width: int
     height: int
+    image_format: str
+    media_type: str
+    extension: str
 
 
 def _open_image(data: bytes, label: str) -> Image.Image:
     try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-        return ImageOps.exif_transpose(image)
+        with Image.open(io.BytesIO(data)) as source:
+            source.load()
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            return image.copy()
     except Exception as exc:
         raise StegError(f"無法讀取{label}") from exc
+
+
+def _inspect_image(data: bytes, label: str) -> tuple[int, int, str]:
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            image_format = (image.format or "").upper()
+            width, height = image.size
+    except Exception as exc:
+        raise StegError(f"無法讀取{label}") from exc
+    if not image_format:
+        raise StegError(f"無法辨識{label}的檔案格式")
+    try:
+        encoded_format = image_format.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise StegError(f"{label}的檔案格式無效") from exc
+    if len(encoded_format) > FORMAT_FIELD_BYTES:
+        raise StegError(f"{label}的檔案名稱過長")
+    return width, height, image_format
+
+
+def _format_details(image_format: str) -> tuple[str, str]:
+    media_type = Image.MIME.get(image_format) or f"image/{image_format.lower()}"
+    extension = PREFERRED_EXTENSIONS.get(image_format)
+    if extension is None:
+        extension = next(
+            (suffix for suffix, registered in Image.registered_extensions().items() if registered == image_format),
+            ".img",
+        )
+    return media_type, extension
 
 
 def image_capacity(width: int, height: int) -> LsbCapacity:
@@ -68,15 +121,6 @@ def capacity_from_image(data: bytes) -> LsbCapacity:
     return image_capacity(*image.size)
 
 
-def _normalized_secret_png(image: Image.Image) -> tuple[bytes, int, int]:
-    width, height = image.size
-    has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
-    normalized = image.convert("RGBA" if has_alpha else "RGB")
-    output = io.BytesIO()
-    normalized.save(output, format="PNG", optimize=True)
-    return output.getvalue(), width, height
-
-
 def _bits_from_bytes(data: bytes) -> np.ndarray:
     return np.unpackbits(np.frombuffer(data, dtype=np.uint8))
 
@@ -88,24 +132,24 @@ def _bytes_from_lsb(values: np.ndarray, byte_count: int) -> bytes:
 
 def embed_image(carrier_data: bytes, secret_data: bytes) -> LsbEmbedResult:
     carrier = _open_image(carrier_data, "載體圖片")
-    secret = _open_image(secret_data, "秘密圖片")
-    secret_png, secret_width, secret_height = _normalized_secret_png(secret)
+    secret_width, secret_height, secret_format = _inspect_image(secret_data, "秘密圖片")
     capacity = image_capacity(*carrier.size)
-    if len(secret_png) > capacity.max_payload_bytes:
+    if len(secret_data) > capacity.max_payload_bytes:
         raise StegError(
-            f"秘密圖片需要 {len(secret_png):,} bytes，"
+            f"秘密圖片需要 {len(secret_data):,} bytes，"
             f"但這張載體圖片只有 {capacity.max_payload_bytes:,} bytes 容量"
         )
 
-    checksum = zlib.crc32(secret_png) & 0xFFFFFFFF
+    checksum = zlib.crc32(secret_data) & 0xFFFFFFFF
     packet = HEADER.pack(
         MAGIC,
         VERSION,
-        len(secret_png),
+        len(secret_data),
         secret_width,
         secret_height,
         checksum,
-    ) + secret_png
+        secret_format.encode("ascii"),
+    ) + secret_data
     bits = _bits_from_bytes(packet)
 
     rgb = np.asarray(carrier.convert("RGB"), dtype=np.uint8).copy()
@@ -124,35 +168,63 @@ def embed_image(carrier_data: bytes, secret_data: bytes) -> LsbEmbedResult:
     return LsbEmbedResult(
         image_bytes=output.getvalue(),
         capacity=capacity,
-        payload_bytes=len(secret_png),
+        payload_bytes=len(secret_data),
         width=secret_width,
         height=secret_height,
+        image_format=secret_format,
     )
 
 
 def extract_image(stego_data: bytes) -> LsbExtractResult:
     stego = _open_image(stego_data, "LSB 圖片")
     capacity = image_capacity(*stego.size)
-    if capacity.channel_bits < HEADER.size * 8:
+    if capacity.channel_bits < PREFIX.size * 8:
         raise StegError("這張圖片太小，無法包含 LSB 圖片資料")
 
     rgb = np.asarray(stego.convert("RGB"), dtype=np.uint8).reshape(-1)
-    header_data = _bytes_from_lsb(rgb, HEADER.size)
     try:
-        magic, version, payload_size, width, height, checksum = HEADER.unpack(header_data)
+        magic, version = PREFIX.unpack(_bytes_from_lsb(rgb, PREFIX.size))
     except struct.error as exc:
         raise StegError("找不到有效的 LSB 圖片資料") from exc
-    if magic != MAGIC or version != VERSION:
+    if magic != MAGIC or version not in {LEGACY_VERSION, VERSION}:
         raise StegError("找不到有效的 LSB 圖片資料")
-    if payload_size < 1 or payload_size > capacity.max_payload_bytes:
+
+    header = LEGACY_HEADER if version == LEGACY_VERSION else HEADER
+    if capacity.channel_bits < header.size * 8:
+        raise StegError("這張圖片太小，無法包含 LSB 圖片資料")
+    header_data = _bytes_from_lsb(rgb, header.size)
+    if version == LEGACY_VERSION:
+        _, _, payload_size, width, height, checksum = LEGACY_HEADER.unpack(header_data)
+        declared_format = "PNG"
+    else:
+        _, _, payload_size, width, height, checksum, format_bytes = HEADER.unpack(header_data)
+        try:
+            declared_format = format_bytes.rstrip(b"\0").decode("ascii").upper()
+        except UnicodeDecodeError as exc:
+            raise StegError("LSB 圖片格式資料無效") from exc
+        if not declared_format:
+            raise StegError("LSB 圖片格式資料無效")
+
+    max_payload_bytes = capacity.channel_bits // 8 - header.size
+    if payload_size < 1 or payload_size > max_payload_bytes:
         raise StegError("LSB 圖片資料長度無效，圖片可能已被改動")
 
-    packet_size = HEADER.size + payload_size
-    payload = _bytes_from_lsb(rgb, packet_size)[HEADER.size:]
+    packet_size = header.size + payload_size
+    payload = _bytes_from_lsb(rgb, packet_size)[header.size:]
     if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
         raise StegError("LSB 圖片資料驗證失敗，圖片可能已經壓縮或修改")
 
-    secret = _open_image(payload, "隱藏的圖片")
-    if secret.size != (width, height):
+    actual_width, actual_height, actual_format = _inspect_image(payload, "隱藏的圖片")
+    if (actual_width, actual_height) != (width, height):
         raise StegError("LSB 圖片尺寸驗證失敗")
-    return LsbExtractResult(image_bytes=payload, width=width, height=height)
+    if actual_format != declared_format:
+        raise StegError("LSB 圖片格式驗證失敗")
+    media_type, extension = _format_details(actual_format)
+    return LsbExtractResult(
+        image_bytes=payload,
+        width=width,
+        height=height,
+        image_format=actual_format,
+        media_type=media_type,
+        extension=extension,
+    )

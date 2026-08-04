@@ -80,6 +80,19 @@ def _uploaded_hidden_image() -> tuple[bytes, str, str]:
     return data, original_name, suffix
 
 
+def _uploaded_lsb_secret_image() -> tuple[bytes, str, str]:
+    upload = request.files.get("hidden_image")
+    if upload is None or not upload.filename:
+        raise StegError("請選擇要隱藏的圖片")
+
+    original_name = Path(upload.filename).name
+    suffix = Path(original_name).suffix.lower()
+    data = upload.read()
+    if not data:
+        raise StegError("要隱藏的圖片檔案是空的")
+    return data, original_name, suffix
+
+
 def _save_upload(root: Path, data: bytes, name: str) -> Path:
     path = root / name
     path.write_bytes(data)
@@ -216,7 +229,7 @@ def lsb_capacity():
 @app.post("/api/lsb/embed")
 def lsb_embed():
     carrier_data, original_name, _ = _uploaded_image()
-    secret_data, _, _ = _uploaded_hidden_image()
+    secret_data, _, _ = _uploaded_lsb_secret_image()
     result = lsb_embed_image(carrier_data, secret_data)
     output = io.BytesIO(result.image_bytes)
     stem = Path(original_name).stem or "image"
@@ -229,6 +242,7 @@ def lsb_embed():
     response.headers["X-Capacity-Bytes"] = str(result.capacity.max_payload_bytes)
     response.headers["X-Hidden-Image-Size"] = f"{result.width}x{result.height}"
     response.headers["X-Hidden-Image-Bytes"] = str(result.payload_bytes)
+    response.headers["X-Hidden-Image-Format"] = result.image_format
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -239,11 +253,12 @@ def lsb_extract():
     result = lsb_extract_image(stego_data)
     response = send_file(
         io.BytesIO(result.image_bytes),
-        mimetype="image/png",
+        mimetype=result.media_type,
         as_attachment=True,
-        download_name="lsb-hidden-image.png",
+        download_name=f"lsb-hidden-image{result.extension}",
     )
     response.headers["X-Hidden-Image-Size"] = f"{result.width}x{result.height}"
+    response.headers["X-Hidden-Image-Format"] = result.image_format
     response.headers["Cache-Control"] = "no-store"
     return response
 

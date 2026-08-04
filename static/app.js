@@ -395,7 +395,7 @@ async function updateLsbCapacity() {
     lsbState.capacity = payload.max_payload_bytes;
     $("#lsb-stat-capacity").textContent = formatBytes(payload.max_payload_bytes);
     const secretSize = lsbState.secretFile ? `；目前秘密檔案 ${formatBytes(lsbState.secretFile.size)}` : "";
-    $("#lsb-capacity-label").textContent = `最多可寫入 ${formatBytes(payload.max_payload_bytes)} 的 PNG 資料${secretSize}。`;
+    $("#lsb-capacity-label").textContent = `最多可寫入 ${formatBytes(payload.max_payload_bytes)} 的原始圖檔資料${secretSize}。`;
   } catch {
     lsbState.capacity = null;
     $("#lsb-stat-capacity").textContent = "無法計算";
@@ -445,8 +445,8 @@ async function selectLsbCarrier(file) {
 
 async function selectLsbSecret(file) {
   clearLsbError();
-  if (!file || !supportedImageTypes.has(file.type.toLowerCase())) {
-    showLsbError("秘密圖片只支援 PNG、JPEG、WebP 或 BMP。");
+  if (!file || (file.type && !file.type.toLowerCase().startsWith("image/"))) {
+    showLsbError("請選擇有效的圖片檔案。");
     return false;
   }
   if (file.size > 30 * 1024 * 1024) {
@@ -614,7 +614,8 @@ $("#lsb-form").addEventListener("submit", async (event) => {
     $("#lsb-result-image").src = lsbState.resultObjectUrl;
     $("#lsb-result-title").textContent = lsbState.mode === "embed" ? "LSB 隱寫圖片已產生" : "隱藏圖片已提取";
     const hiddenDimensions = response.headers.get("X-Hidden-Image-Size");
-    $("#lsb-result-meta").textContent = [hiddenDimensions, formatBytes(blob.size), lsbState.resultFilename].filter(Boolean).join(" · ");
+    const hiddenFormat = response.headers.get("X-Hidden-Image-Format");
+    $("#lsb-result-meta").textContent = [hiddenFormat, hiddenDimensions, formatBytes(blob.size), lsbState.resultFilename].filter(Boolean).join(" · ");
     $("#lsb-result-card").hidden = false;
     if (lsbState.mode === "embed") {
       $("#lsb-large-preview").src = lsbState.resultObjectUrl;
