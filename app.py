@@ -12,6 +12,11 @@ from tempfile import TemporaryDirectory
 from flask import Flask, jsonify, render_template, request, send_file
 from PIL import Image
 
+from lsb_steg import (
+    capacity_from_image as lsb_capacity_from_image,
+    embed_image as lsb_embed_image,
+    extract_image as lsb_extract_image,
+)
 from robust_steg import (
     DEFAULT_REDUNDANCY,
     DEFAULT_STRENGTH,
@@ -194,6 +199,53 @@ def extract():
         width=payload.width,
         height=payload.height,
     )
+
+
+@app.post("/api/lsb/capacity")
+def lsb_capacity():
+    data, _, _ = _uploaded_image()
+    result = lsb_capacity_from_image(data)
+    return jsonify(
+        width=result.width,
+        height=result.height,
+        channel_bits=result.channel_bits,
+        max_payload_bytes=result.max_payload_bytes,
+    )
+
+
+@app.post("/api/lsb/embed")
+def lsb_embed():
+    carrier_data, original_name, _ = _uploaded_image()
+    secret_data, _, _ = _uploaded_hidden_image()
+    result = lsb_embed_image(carrier_data, secret_data)
+    output = io.BytesIO(result.image_bytes)
+    stem = Path(original_name).stem or "image"
+    response = send_file(
+        output,
+        mimetype="image/png",
+        as_attachment=True,
+        download_name=f"{stem}_lsb.png",
+    )
+    response.headers["X-Capacity-Bytes"] = str(result.capacity.max_payload_bytes)
+    response.headers["X-Hidden-Image-Size"] = f"{result.width}x{result.height}"
+    response.headers["X-Hidden-Image-Bytes"] = str(result.payload_bytes)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/api/lsb/extract")
+def lsb_extract():
+    stego_data, _, _ = _uploaded_image()
+    result = lsb_extract_image(stego_data)
+    response = send_file(
+        io.BytesIO(result.image_bytes),
+        mimetype="image/png",
+        as_attachment=True,
+        download_name="lsb-hidden-image.png",
+    )
+    response.headers["X-Hidden-Image-Size"] = f"{result.width}x{result.height}"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.errorhandler(StegError)

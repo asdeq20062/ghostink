@@ -35,8 +35,12 @@
           <span class="tab-index">02</span>
           <span><strong>讀取內容</strong><small>取回隱藏文字或圖片</small></span>
         </button>
-        <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="zero-width">
+        <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="lsb">
           <span class="tab-index">03</span>
+          <span><strong>LSB 隱寫</strong><small>把圖片藏進另一張圖片</small></span>
+        </button>
+        <button class="mode-tab" type="button" role="tab" aria-selected="false" data-mode="zero-width">
+          <span class="tab-index">04</span>
           <span><strong>文字隱寫</strong><small>零寬字元隱寫與提取</small></span>
         </button>
       </div>
@@ -190,6 +194,96 @@
               <img id="result-image" alt="取回的隱藏圖片" />
             </div>
             <small id="result-meta"></small>
+          </section>
+
+          <p class="privacy-note"><span aria-hidden="true">⌁</span>圖片由這部裝置上的本機服務處理。</p>
+        </aside>
+      </section>
+
+      <section class="workspace lsb-workspace" id="lsb-workspace" hidden>
+        <form class="control-panel" id="lsb-form" novalidate>
+          <div class="section-label"><span>1</span>選擇操作</div>
+          <div class="payload-switch" role="tablist" aria-label="LSB 隱寫操作">
+            <button class="lsb-action-tab active" type="button" role="tab" aria-selected="true" data-lsb-mode="embed">嵌入圖片</button>
+            <button class="lsb-action-tab" type="button" role="tab" aria-selected="false" data-lsb-mode="extract">提取圖片</button>
+          </div>
+
+          <div class="form-block compact-block">
+            <div class="section-label"><span>2</span><b id="lsb-carrier-label">選擇載體圖片</b></div>
+            <label class="dropzone lsb-dropzone" id="lsb-dropzone" for="lsb-carrier-input">
+              <input id="lsb-carrier-input" name="image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+              <span class="upload-glyph" aria-hidden="true"><i></i></span>
+              <strong id="lsb-dropzone-title">拖放或選擇載體圖片</strong>
+              <span>PNG、JPEG、WebP 或 BMP</span>
+              <small id="lsb-dropzone-note">載體越大，可隱藏的圖片資料越多</small>
+            </label>
+
+            <div class="selected-file" id="lsb-selected-file" hidden>
+              <div class="file-thumb"><img id="lsb-file-thumb" alt="LSB 圖片預覽" /></div>
+              <div class="file-copy">
+                <strong id="lsb-file-name"></strong>
+                <span id="lsb-file-meta"></span>
+              </div>
+              <button id="lsb-remove-file" class="icon-button" type="button" aria-label="移除圖片">×</button>
+            </div>
+          </div>
+
+          <div class="form-block lsb-embed-only">
+            <div class="section-label"><span>3</span>選擇秘密圖片</div>
+            <label class="hidden-image-picker" id="lsb-secret-picker" for="lsb-secret-input">
+              <input id="lsb-secret-input" name="hidden_image" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+              <img id="lsb-secret-thumb" alt="秘密圖片預覽" hidden />
+              <span id="lsb-secret-copy"><strong>選擇要隱藏的圖片</strong><small>圖片會轉成無損 PNG 後寫入 LSB</small></span>
+            </label>
+            <p class="payload-note" id="lsb-capacity-label">選擇載體圖片後顯示容量。</p>
+          </div>
+
+          <div class="lsb-warning">
+            <strong>請保留 PNG 格式</strong>
+            <p>LSB 資料無法抵抗 JPEG 壓縮、縮放、裁切或圖片編輯；下載後請直接保留原始 PNG。</p>
+          </div>
+
+          <div class="form-error" id="lsb-error" role="alert" hidden></div>
+          <button class="primary-button" id="lsb-submit" type="submit">
+            <span class="button-label" id="lsb-submit-label">產生 LSB 隱寫圖片</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <aside class="preview-panel">
+          <div class="preview-heading">
+            <div><span>預覽</span><strong id="lsb-preview-title">尚未選擇圖片</strong></div>
+            <span class="format-badge" id="lsb-format-badge" hidden></span>
+          </div>
+
+          <div class="image-stage empty" id="lsb-image-stage">
+            <img id="lsb-large-preview" alt="LSB 圖片預覽" hidden />
+            <div class="empty-preview" id="lsb-empty-preview">
+              <span class="frame-icon" aria-hidden="true"><i></i></span>
+              <strong>LSB 圖片預覽</strong>
+              <span>選擇圖片後會顯示在這裡</span>
+            </div>
+            <div class="processing" id="lsb-processing" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <strong id="lsb-processing-label">正在處理 LSB 資料</strong>
+            </div>
+          </div>
+
+          <div class="image-stats" id="lsb-image-stats" hidden>
+            <div><span>尺寸</span><strong id="lsb-stat-dimensions">—</strong></div>
+            <div><span>檔案大小</span><strong id="lsb-stat-size">—</strong></div>
+            <div><span>LSB 容量</span><strong id="lsb-stat-capacity">—</strong></div>
+          </div>
+
+          <section class="result-card" id="lsb-result-card" hidden>
+            <div class="result-header">
+              <div><span class="result-dot"></span><strong id="lsb-result-title">LSB 處理完成</strong></div>
+              <button id="lsb-result-action" type="button">下載圖片</button>
+            </div>
+            <div class="result-image">
+              <img id="lsb-result-image" alt="LSB 處理結果" />
+            </div>
+            <small id="lsb-result-meta"></small>
           </section>
 
           <p class="privacy-note"><span aria-hidden="true">⌁</span>圖片由這部裝置上的本機服務處理。</p>

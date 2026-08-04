@@ -28,6 +28,17 @@ const keyInput = $("#key");
 const resultCard = $("#result-card");
 const zeroWidthForm = $("#zero-width-form");
 let zeroWidthMode = "hide";
+const lsbState = {
+  mode: "embed",
+  carrierFile: null,
+  carrierObjectUrl: null,
+  secretFile: null,
+  secretObjectUrl: null,
+  resultObjectUrl: null,
+  resultFilename: null,
+  capacity: null,
+  busy: false,
+};
 const supportedImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/bmp", "image/x-ms-bmp"]);
 const pastedImageExtensions = {
   "image/png": "png",
@@ -119,13 +130,19 @@ function setMode(mode) {
     tab.setAttribute("aria-selected", String(active));
   });
   const isZeroWidth = mode === "zero-width";
-  $("#image-workspace").hidden = isZeroWidth;
+  const isLsb = mode === "lsb";
+  $("#image-workspace").hidden = isZeroWidth || isLsb;
+  $("#lsb-workspace").hidden = !isLsb;
   $("#zero-width-workspace").hidden = !isZeroWidth;
-  $("#page-title").textContent = isZeroWidth ? "文字隱寫處理" : "圖片隱寫處理";
+  $("#page-title").textContent = isZeroWidth
+    ? "文字隱寫處理"
+    : (isLsb ? "LSB 圖片隱寫" : "圖片隱寫處理");
   $("#page-description").textContent = isZeroWidth
     ? "用 U+200B 與 U+200C 把秘密文字藏進另一段文字，亦可隨時提取。"
-    : "把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。";
-  if (isZeroWidth) return;
+    : (isLsb
+      ? "把一張圖片無損寫入另一張圖片的 RGB 最低有效位元，並可完整提取。"
+      : "把文字或另一張圖片嵌入載體圖片，之後可完整辨識內容類型並取回。");
+  if (isZeroWidth || isLsb) return;
   $$(".embed-only").forEach((node) => { node.hidden = mode !== "embed"; });
   $(".step-number").textContent = mode === "embed" ? "3" : "2";
   $(".button-label").textContent = mode === "embed" ? "產生隱寫圖片" : "讀取隱藏內容";
@@ -318,6 +335,161 @@ async function parseError(response) {
   }
 }
 
+function showLsbError(text) {
+  const node = $("#lsb-error");
+  node.textContent = text;
+  node.hidden = false;
+}
+
+function clearLsbError() {
+  const node = $("#lsb-error");
+  node.textContent = "";
+  node.hidden = true;
+}
+
+function clearLsbResult() {
+  if (lsbState.resultObjectUrl) URL.revokeObjectURL(lsbState.resultObjectUrl);
+  lsbState.resultObjectUrl = null;
+  lsbState.resultFilename = null;
+  $("#lsb-result-card").hidden = true;
+  if (lsbState.carrierObjectUrl) $("#lsb-large-preview").src = lsbState.carrierObjectUrl;
+}
+
+function clearLsbCarrier() {
+  clearLsbError();
+  clearLsbResult();
+  lsbState.carrierFile = null;
+  lsbState.capacity = null;
+  $("#lsb-carrier-input").value = "";
+  if (lsbState.carrierObjectUrl) URL.revokeObjectURL(lsbState.carrierObjectUrl);
+  lsbState.carrierObjectUrl = null;
+  $("#lsb-dropzone").hidden = false;
+  $("#lsb-selected-file").hidden = true;
+  $("#lsb-large-preview").hidden = true;
+  $("#lsb-empty-preview").hidden = false;
+  $("#lsb-image-stage").classList.add("empty");
+  $("#lsb-image-stats").hidden = true;
+  $("#lsb-format-badge").hidden = true;
+  $("#lsb-preview-title").textContent = "尚未選擇圖片";
+  $("#lsb-capacity-label").textContent = "選擇載體圖片後顯示容量。";
+}
+
+function loadImageDimensions(url) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
+async function updateLsbCapacity() {
+  if (!lsbState.carrierFile) return;
+  const data = new FormData();
+  data.append("image", lsbState.carrierFile);
+  $("#lsb-stat-capacity").textContent = "計算中";
+  try {
+    const response = await fetch("/api/lsb/capacity", { method: "POST", body: data });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "無法計算 LSB 容量");
+    lsbState.capacity = payload.max_payload_bytes;
+    $("#lsb-stat-capacity").textContent = formatBytes(payload.max_payload_bytes);
+    const secretSize = lsbState.secretFile ? `；目前秘密檔案 ${formatBytes(lsbState.secretFile.size)}` : "";
+    $("#lsb-capacity-label").textContent = `最多可寫入 ${formatBytes(payload.max_payload_bytes)} 的 PNG 資料${secretSize}。`;
+  } catch {
+    lsbState.capacity = null;
+    $("#lsb-stat-capacity").textContent = "無法計算";
+  }
+}
+
+async function selectLsbCarrier(file) {
+  clearLsbError();
+  if (!file || !supportedImageTypes.has(file.type.toLowerCase())) {
+    showLsbError("圖片只支援 PNG、JPEG、WebP 或 BMP。");
+    return false;
+  }
+  if (file.size > 30 * 1024 * 1024) {
+    showLsbError("圖片不可大於 30 MB。");
+    return false;
+  }
+
+  clearLsbResult();
+  if (lsbState.carrierObjectUrl) URL.revokeObjectURL(lsbState.carrierObjectUrl);
+  lsbState.carrierFile = file;
+  lsbState.carrierObjectUrl = URL.createObjectURL(file);
+  const dimensions = await loadImageDimensions(lsbState.carrierObjectUrl);
+  if (!dimensions) {
+    clearLsbCarrier();
+    showLsbError("無法讀取這張圖片。");
+    return false;
+  }
+
+  $("#lsb-dropzone").hidden = true;
+  $("#lsb-selected-file").hidden = false;
+  $("#lsb-file-thumb").src = lsbState.carrierObjectUrl;
+  $("#lsb-file-name").textContent = file.name;
+  $("#lsb-file-meta").textContent = `${dimensions.width} × ${dimensions.height} · ${formatBytes(file.size)}`;
+  $("#lsb-large-preview").src = lsbState.carrierObjectUrl;
+  $("#lsb-large-preview").hidden = false;
+  $("#lsb-empty-preview").hidden = true;
+  $("#lsb-image-stage").classList.remove("empty");
+  $("#lsb-preview-title").textContent = file.name;
+  $("#lsb-format-badge").textContent = (file.name.split(".").pop() || "IMG").toUpperCase();
+  $("#lsb-format-badge").hidden = false;
+  $("#lsb-stat-dimensions").textContent = `${dimensions.width} × ${dimensions.height}`;
+  $("#lsb-stat-size").textContent = formatBytes(file.size);
+  $("#lsb-image-stats").hidden = false;
+  await updateLsbCapacity();
+  return true;
+}
+
+async function selectLsbSecret(file) {
+  clearLsbError();
+  if (!file || !supportedImageTypes.has(file.type.toLowerCase())) {
+    showLsbError("秘密圖片只支援 PNG、JPEG、WebP 或 BMP。");
+    return false;
+  }
+  if (file.size > 30 * 1024 * 1024) {
+    showLsbError("秘密圖片不可大於 30 MB。");
+    return false;
+  }
+  clearLsbResult();
+  if (lsbState.secretObjectUrl) URL.revokeObjectURL(lsbState.secretObjectUrl);
+  lsbState.secretFile = file;
+  lsbState.secretObjectUrl = URL.createObjectURL(file);
+  $("#lsb-secret-thumb").src = lsbState.secretObjectUrl;
+  $("#lsb-secret-thumb").hidden = false;
+  $("#lsb-secret-copy strong").textContent = file.name;
+  $("#lsb-secret-copy small").textContent = `${formatBytes(file.size)} · 按一下可更換`;
+  if (lsbState.carrierFile) await updateLsbCapacity();
+  return true;
+}
+
+function setLsbMode(mode) {
+  lsbState.mode = mode;
+  clearLsbError();
+  clearLsbResult();
+  $$(".lsb-action-tab").forEach((tab) => {
+    const active = tab.dataset.lsbMode === mode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  $$(".lsb-embed-only").forEach((node) => { node.hidden = mode !== "embed"; });
+  $("#lsb-carrier-label").textContent = mode === "embed" ? "選擇載體圖片" : "選擇 LSB 隱寫圖片";
+  $("#lsb-dropzone-title").textContent = mode === "embed" ? "拖放或選擇載體圖片" : "拖放或選擇 LSB 隱寫圖片";
+  $("#lsb-dropzone-note").textContent = mode === "embed"
+    ? "載體越大，可隱藏的圖片資料越多"
+    : "只支援本工具產生、未被修改的 PNG";
+  $("#lsb-submit-label").textContent = mode === "embed" ? "產生 LSB 隱寫圖片" : "提取隱藏圖片";
+}
+
+function setLsbBusy(busy, label) {
+  lsbState.busy = busy;
+  $("#lsb-submit").disabled = busy;
+  $("#lsb-processing-label").textContent = label;
+  $("#lsb-processing").hidden = !busy;
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (state.busy) return;
@@ -410,11 +582,64 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+$("#lsb-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (lsbState.busy) return;
+  clearLsbError();
+  clearLsbResult();
+  if (!lsbState.carrierFile) {
+    showLsbError(lsbState.mode === "embed" ? "請先選擇載體圖片。" : "請先選擇 LSB 隱寫圖片。");
+    return;
+  }
+  if (lsbState.mode === "embed" && !lsbState.secretFile) {
+    showLsbError("請選擇要隱藏的圖片。");
+    return;
+  }
+
+  const data = new FormData();
+  data.append("image", lsbState.carrierFile);
+  if (lsbState.mode === "embed") data.append("hidden_image", lsbState.secretFile);
+  setLsbBusy(true, lsbState.mode === "embed" ? "正在寫入 LSB 資料" : "正在提取隱藏圖片");
+
+  try {
+    const endpoint = lsbState.mode === "embed" ? "/api/lsb/embed" : "/api/lsb/extract";
+    const response = await fetch(endpoint, { method: "POST", body: data });
+    if (!response.ok) throw new Error(await parseError(response));
+    const blob = await response.blob();
+    lsbState.resultObjectUrl = URL.createObjectURL(blob);
+    lsbState.resultFilename = getDownloadName(
+      response,
+      lsbState.mode === "embed" ? "lsb-stego.png" : "lsb-hidden-image.png",
+    );
+    $("#lsb-result-image").src = lsbState.resultObjectUrl;
+    $("#lsb-result-title").textContent = lsbState.mode === "embed" ? "LSB 隱寫圖片已產生" : "隱藏圖片已提取";
+    const hiddenDimensions = response.headers.get("X-Hidden-Image-Size");
+    $("#lsb-result-meta").textContent = [hiddenDimensions, formatBytes(blob.size), lsbState.resultFilename].filter(Boolean).join(" · ");
+    $("#lsb-result-card").hidden = false;
+    if (lsbState.mode === "embed") {
+      $("#lsb-large-preview").src = lsbState.resultObjectUrl;
+      $("#lsb-preview-title").textContent = lsbState.resultFilename;
+      $("#lsb-format-badge").textContent = "PNG";
+      $("#lsb-stat-size").textContent = formatBytes(blob.size);
+    }
+    $("#lsb-result-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    toast(lsbState.mode === "embed" ? "LSB 隱寫圖片已完成" : "隱藏圖片已成功提取");
+  } catch (error) {
+    showLsbError(error.message || "LSB 圖片處理失敗。");
+  } finally {
+    setLsbBusy(false, "正在處理 LSB 資料");
+  }
+});
+
 $$(".mode-tab").forEach((tab) => tab.addEventListener("click", () => setMode(tab.dataset.mode)));
 $$(".payload-tab").forEach((tab) => tab.addEventListener("click", () => setPayloadType(tab.dataset.payload)));
 $$(".zero-width-tab").forEach((tab) => tab.addEventListener("click", () => setZeroWidthMode(tab.dataset.zeroWidthMode)));
+$$(".lsb-action-tab").forEach((tab) => tab.addEventListener("click", () => setLsbMode(tab.dataset.lsbMode)));
 fileInput.addEventListener("change", () => selectImage(fileInput.files[0]));
 $("#hidden-image-input").addEventListener("change", (event) => selectHiddenImage(event.target.files[0]));
+$("#lsb-carrier-input").addEventListener("change", (event) => selectLsbCarrier(event.target.files[0]));
+$("#lsb-secret-input").addEventListener("change", (event) => selectLsbSecret(event.target.files[0]));
+$("#lsb-remove-file").addEventListener("click", clearLsbCarrier);
 $("#remove-file").addEventListener("click", clearFile);
 message.addEventListener("input", updateMessageCount);
 $("#redundancy").addEventListener("change", updateCapacity);
@@ -429,6 +654,16 @@ $("#redundancy").addEventListener("change", updateCapacity);
 }));
 dropzone.addEventListener("drop", (event) => selectImage(event.dataTransfer.files[0]));
 
+["dragenter", "dragover"].forEach((name) => $("#lsb-dropzone").addEventListener(name, (event) => {
+  event.preventDefault();
+  $("#lsb-dropzone").classList.add("dragover");
+}));
+["dragleave", "drop"].forEach((name) => $("#lsb-dropzone").addEventListener(name, (event) => {
+  event.preventDefault();
+  $("#lsb-dropzone").classList.remove("dragover");
+}));
+$("#lsb-dropzone").addEventListener("drop", (event) => selectLsbCarrier(event.dataTransfer.files[0]));
+
 document.addEventListener("paste", async (event) => {
   const imageItem = [...(event.clipboardData?.items || [])].find(
     (item) => item.kind === "file" && item.type.startsWith("image/"),
@@ -441,6 +676,14 @@ document.addEventListener("paste", async (event) => {
   const pastedFile = clipboardFile && extension
     ? new File([clipboardFile], `pasted-image.${extension}`, { type: clipboardFile.type })
     : clipboardFile;
+  if (state.mode === "lsb") {
+    if (lsbState.mode === "embed" && lsbState.carrierFile) {
+      if (await selectLsbSecret(pastedFile)) toast("已貼上要隱藏的圖片");
+    } else if (await selectLsbCarrier(pastedFile)) {
+      toast("已從剪貼簿貼上 LSB 圖片");
+    }
+    return;
+  }
   const pasteAsHiddenImage = state.mode === "embed" && state.payloadType === "image";
   if (pasteAsHiddenImage) {
     if (await selectHiddenImage(pastedFile)) toast("已貼上要隱藏的圖片");
@@ -481,6 +724,15 @@ $("#result-action").addEventListener("click", async () => {
   }
 });
 
+$("#lsb-result-action").addEventListener("click", () => {
+  if (!lsbState.resultObjectUrl) return;
+  const link = document.createElement("a");
+  link.href = lsbState.resultObjectUrl;
+  link.download = lsbState.resultFilename || "lsb-image.png";
+  link.click();
+  toast("圖片已下載");
+});
+
 zeroWidthForm.addEventListener("submit", (event) => {
   event.preventDefault();
   $("#zero-width-error").hidden = true;
@@ -513,6 +765,9 @@ window.addEventListener("beforeunload", () => {
   if (state.hiddenObjectUrl) URL.revokeObjectURL(state.hiddenObjectUrl);
   if (state.extractedObjectUrl) URL.revokeObjectURL(state.extractedObjectUrl);
   if (state.outputObjectUrl) URL.revokeObjectURL(state.outputObjectUrl);
+  if (lsbState.carrierObjectUrl) URL.revokeObjectURL(lsbState.carrierObjectUrl);
+  if (lsbState.secretObjectUrl) URL.revokeObjectURL(lsbState.secretObjectUrl);
+  if (lsbState.resultObjectUrl) URL.revokeObjectURL(lsbState.resultObjectUrl);
 });
 
 updateMessageCount();

@@ -39,6 +39,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("按一下選擇，或貼上圖片".encode(), response.data)
         self.assertIn("按右鍵使用瀏覽器選單下載".encode(), response.data)
         self.assertIn("文字隱寫".encode(), response.data)
+        self.assertIn("LSB 隱寫".encode(), response.data)
+        self.assertIn("請保留 PNG 格式".encode(), response.data)
         self.assertIn("U+200B".encode(), response.data)
         self.assertIn("U+200C".encode(), response.data)
         self.assertIn(">COPY<".encode(), response.data)
@@ -119,6 +121,47 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["type"], "image")
         self.assertEqual(payload["mime_type"], "image/webp")
         self.assertEqual((payload["width"], payload["height"]), (12, 10))
+
+    def test_lsb_capacity(self):
+        response = self.client.post(
+            "/api/lsb/capacity",
+            data={"image": self.image_upload()},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload["width"], payload["height"]), (512, 512))
+        self.assertGreater(payload["max_payload_bytes"], 90_000)
+
+    def test_lsb_embed_and_extract_hidden_image_losslessly(self):
+        secret = hidden_png()
+        embedded = self.client.post(
+            "/api/lsb/embed",
+            data={
+                "image": self.image_upload(),
+                "hidden_image": (io.BytesIO(secret), "secret.png"),
+            },
+        )
+        self.assertEqual(embedded.status_code, 200)
+        self.assertEqual(embedded.mimetype, "image/png")
+        self.assertEqual(embedded.headers["X-Hidden-Image-Size"], "12x10")
+
+        extracted = self.client.post(
+            "/api/lsb/extract",
+            data={"image": self.image_upload(embedded.data)},
+        )
+        self.assertEqual(extracted.status_code, 200)
+        self.assertEqual(extracted.mimetype, "image/png")
+        self.assertEqual(extracted.headers["X-Hidden-Image-Size"], "12x10")
+        with Image.open(io.BytesIO(secret)) as original, Image.open(io.BytesIO(extracted.data)) as restored:
+            self.assertEqual(original.convert("RGBA").tobytes(), restored.convert("RGBA").tobytes())
+
+    def test_lsb_extract_rejects_plain_image(self):
+        response = self.client.post(
+            "/api/lsb/extract",
+            data={"image": self.image_upload()},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("LSB", response.get_json()["error"])
 
 
 if __name__ == "__main__":
